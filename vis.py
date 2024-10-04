@@ -1,11 +1,13 @@
+import os
+import torch
+import argparse
+import numpy as np
+import open3d as o3d
+import matplotlib.pyplot as plt
+
 from hilbert.dataset import ModelNetDataset
 from hilbert.transform import GridSample
 from hilbert.default import encode
-import argparse
-import numpy as np
-import torch
-import open3d as o3d
-import matplotlib.pyplot as plt
 
 def serialization(data, order=["hilbert"], depth=None, shuffle_orders=False):
     """
@@ -50,36 +52,55 @@ def build_label_to_color(labels):
     label_to_color = {label: list(color) for label,color in zip(labels,colors)}
     return label_to_color
 
-def plot_pcd(pcd, labels, save_path, front_vector=[0.5,0,0.5], up_vector=[0.,1.,0.], zoom_factor=0.5):
+def plot_pcd(pcd, labels, save_path, front_vector=[0.2, 0, 0.8], up_vector=[0., 1., 0.], zoom_factor=0.8, 
+             plot_mesh=True, radii=[1.5, 2.0, 6.0]):
     points = pcd["coord"]
+    print(f'num of points: {points.shape[0]}')
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(points)
+
+    # apply color to points
     label_to_color = build_label_to_color(labels)
     colors = np.array([label_to_color[label] for label in labels])
     pcd.colors = o3d.utility.Vector3dVector(colors)
 
     vis=o3d.visualization.Visualizer()
     vis.create_window(visible=False)
-    vis.add_geometry(pcd)
 
+    if plot_mesh:
+        pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+        pcd.orient_normals_consistent_tangent_plane(k=50)
+        print("Performing Ball-Pivoting Algorithm(BPA)")
+        distances = pcd.compute_nearest_neighbor_distance()
+        avg_dist = np.mean(distances)
+        print(f'mean distance: {avg_dist}')
+        radii = [avg_dist*r for r in radii]
+        mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(pcd, o3d.utility.DoubleVector(radii))
+        vis.add_geometry(mesh)
+    else:
+        vis.add_geometry(pcd)
+
+    # set camera position
     ctr = vis.get_view_control()
     ctr.set_front(front_vector)
     ctr.set_up(up_vector)
     ctr.set_zoom(zoom_factor)
     vis.poll_events()
     vis.update_renderer()
-
     vis.capture_screen_image(save_path)
     vis.destroy_window()
-    print(f'Saved point cloud image to: {save_path}')
+    print(f'Saved image to: {save_path}')
 
 def main(args):
     data_root = args.data_root
+    idx = args.idx
+    patch_size = args.patch_size
+
     dataset = ModelNetDataset(data_root=data_root)
-    patch_size = 256
-    data = dataset.get_data(idx=1)
-    transform = GridSample(keys=["coord", "normal"], grid_size=0.01, return_grid_coord=True)
-    data = transform(data)
+    print(f'size of dataset: {len(dataset)}')
+    data = dataset.get_data(idx=idx)
+    grid_sample = GridSample(keys=["coord", "normal"], grid_size=0.01, return_grid_coord=True)
+    data = grid_sample(data)
     data = serialization(data=data)
     indexes = data["serialized_order"]
     n_points = indexes.numel()
@@ -88,11 +109,23 @@ def main(args):
     for i in range(0, num_full_patchs):
         labels.extend([i]*patch_size)
     labels.extend([num_full_patchs+1]*(len(data["coord"])-len(labels)))
-    plot_pcd(pcd=data, labels=labels, save_path = args.save_path)
+
+    if args.plot_mesh:
+        save_path = os.path.join(args.save_dir, f'{data["name"]}_mesh.png')
+    else:
+        save_path = os.path.join(args.save_dir, f'{data["name"]}.png')
+
+    plot_pcd(pcd=data, 
+             labels=labels, 
+             save_path = save_path,
+             plot_mesh = args.plot_mesh)   
 
 if __name__=="__main__":
     parser=argparse.ArgumentParser('visualization')
     parser.add_argument('--data_root', default="D:\PointNet\PointNet\data\modelnet40_normal_resampled")
-    parser.add_argument('--save_path', default="test_pcd.png")
+    parser.add_argument('--save_dir', default="imgs")
+    parser.add_argument('--idx', default=8000, type=int)
+    parser.add_argument('--patch_size', default=64, type=int)
+    parser.add_argument('--plot_mesh', action='store_true')
     args = parser.parse_args()
     main(args)
